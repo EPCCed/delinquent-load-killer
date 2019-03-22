@@ -13,22 +13,16 @@ module dlkhunter_mod
     subroutine DLKHunter_finish_c() bind(C, name="DLKHunter_finish")
     end subroutine DLKHunter_finish_c
 
-    integer function DLKHunter_configureEventGathering_c() bind(C, name="DLKHunter_configureEventGathering")
-    end function DLKHunter_configureEventGathering_c
-
-    subroutine DLKHunter_checkpointEventGathering_c(gatherindex, source_name, linenum) &
-        bind(C, name="DLKHunter_checkpointEventGathering")
+    subroutine DLKHunter_stopEventEpoch_c(source_name, linenum) &
+        bind(C, name="DLKHunter_stopEventEpoch")
       use iso_c_binding, only : c_int, c_char
       implicit none
       character(c_char) :: source_name
-      integer(c_int), value :: gatherindex, linenum
-    end subroutine DLKHunter_checkpointEventGathering_c
+      integer(c_int), value :: linenum
+    end subroutine DLKHunter_stopEventEpoch_c
 
-    subroutine DLKHunter_startEventGathering_c() bind(C, name="DLKHunter_startEventGathering")
-    end subroutine DLKHunter_startEventGathering_c
-
-    subroutine DLKHunter_initialiseEventSet_c() bind(C, name="DLKHunter_initialiseEventSet")
-    end subroutine DLKHunter_initialiseEventSet_c
+    subroutine DLKHunter_startEventEpoch_c() bind(C, name="DLKHunter_startEventEpoch")
+    end subroutine DLKHunter_startEventEpoch_c
 
     subroutine DLKHunter_displayReport_c(gatherindex) bind(C, name="DLKHunter_displayReport")
       use iso_c_binding, only : c_int
@@ -37,8 +31,8 @@ module dlkhunter_mod
     end subroutine DLKHunter_displayReport_c
   end interface
 
-  public DLKHunter_init, DLKHunter_finish, DLKHunter_configureEventGathering, DLKHunter_checkpointEventGathering, &
-    DLKHunter_startEventGathering, DLKHunter_initialiseEventSet, DLKHunter_displayReport
+  public DLKHunter_init, DLKHunter_finish, DLKHunter_stopEventEpoch, &
+    DLKHunter_startEventEpoch, DLKHunter_displayReport
 
 contains
   subroutine DLKHunter_init(filename, time_profile)
@@ -66,12 +60,8 @@ contains
     call DLKHunter_finish_c()
   end subroutine DLKHunter_finish
 
-  integer function DLKHunter_configureEventGathering()
-    DLKHunter_configureEventGathering=DLKHunter_configureEventGathering_c()
-  end function DLKHunter_configureEventGathering
-
-  subroutine DLKHunter_checkpointEventGathering(gatherindex, source_name, linenum)
-    integer, intent(in) :: gatherindex, linenum
+  subroutine DLKHunter_stopEventEpoch(source_name, linenum)
+    integer, intent(in) :: linenum
     character(len=*), intent(in) :: source_name
 
     character(100) :: string_value
@@ -82,16 +72,12 @@ contains
     str_len=len(trim(source_name))+1
     string_value(str_len:str_len)=C_NULL_CHAR
 
-    call DLKHunter_checkpointEventGathering_c(gatherindex, string_value, linenum)
-  end subroutine DLKHunter_checkpointEventGathering
+    call DLKHunter_stopEventEpoch_c(string_value, linenum)
+  end subroutine DLKHunter_stopEventEpoch
 
-  subroutine DLKHunter_startEventGathering()
-    call DLKHunter_startEventGathering_c()
-  end subroutine DLKHunter_startEventGathering
-
-  subroutine DLKHunter_initialiseEventSet()
-    call DLKHunter_initialiseEventSet_c
-  end subroutine DLKHunter_initialiseEventSet
+  subroutine DLKHunter_startEventEpoch()
+    call DLKHunter_startEventEpoch_c()
+  end subroutine DLKHunter_startEventEpoch
 
   subroutine DLKHunter_displayReport(gatherindex)
     integer, intent(in) :: gatherindex

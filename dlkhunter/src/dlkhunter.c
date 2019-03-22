@@ -5,6 +5,9 @@
 #include "papi.h"
 #include "dlkhunter.h"
 
+#define TIME_PROFILE_SLICE 100
+#define MAX_EPOCHS 100
+
 struct event_collection_struct {
   long long * counters, * time_profile_counters;
   char * source_filename;
@@ -12,20 +15,23 @@ struct event_collection_struct {
   int numberActivations;
 };
 
-#define TIME_PROFILE_SLICE 100
-
 static char ** eventIdentifiers=NULL;
 static char * reportFilename;
 static struct event_collection_struct * collections;
-static int totalNumberEvents=0, eventCollectionCounter=0, eventSet=PAPI_NULL, time_profiling;
+static int totalNumberEvents=0, eventCollectionCounter=0, eventSet=PAPI_NULL, time_profiling, library_initialised=0;
 
 static void addPAPIEvent(char*);
+static int findIndexOfGathering(char*, int);
+static int initialiseEventGathering(char*, int);
+static void initialiseEventSet();
 static void checkStatus(int);
 static void dumpTimeCounters(FILE*, int,int);
 static void finaliseReports();
 
 void DLKHunter_finish() {
-  finaliseReports();
+  if (library_initialised) {
+    finaliseReports();
+  }
 }
 
 void DLKHunter_displayReport(int gatherIndex) {
@@ -37,32 +43,15 @@ void DLKHunter_displayReport(int gatherIndex) {
   printf("\n");
 }
 
-int DLKHunter_configureEventGathering() {
-  collections[eventCollectionCounter].counters=(long long *) malloc(sizeof(long long) * totalNumberEvents);
-  if (time_profiling) {
-    collections[eventCollectionCounter].time_profile_counters=(long long *) malloc(sizeof(long long) * totalNumberEvents * TIME_PROFILE_SLICE);
-  } else {
-    collections[eventCollectionCounter].time_profile_counters=NULL;
-  }
-  collections[eventCollectionCounter].numberActivations=0;
-  collections[eventCollectionCounter].source_filename=NULL;
-  collections[eventCollectionCounter].line_num=0;
-  int i;
-  for (i=0;i<totalNumberEvents;i++) {
-    collections[eventCollectionCounter].counters[i]=0;
-  }
-  eventCollectionCounter++;
-  return eventCollectionCounter-1;
-}
-
-void DLKHunter_checkpointEventGathering(int gatheringIndex, char * source_name, int linenum) {
+void DLKHunter_stopEventEpoch(char * source_name, int linenum) {
   long long hits[totalNumberEvents];
-  if (collections[gatheringIndex].line_num == 0) collections[gatheringIndex].line_num=linenum;
-  if (collections[gatheringIndex].source_filename == NULL) {
-    collections[gatheringIndex].source_filename=(char*) malloc(sizeof(char) * strlen(source_name) + 1);
-    strcpy(collections[gatheringIndex].source_filename, source_name);
-  }
   checkStatus(PAPI_stop(eventSet, hits));
+
+  int gatheringIndex=findIndexOfGathering(source_name, linenum);
+  if (gatheringIndex == -1) {
+    gatheringIndex=initialiseEventGathering(source_name, linenum);
+  }
+
   int i;
   for (i=0;i<totalNumberEvents;i++) {
     collections[gatheringIndex].counters[i]+=hits[i];
@@ -82,7 +71,11 @@ void DLKHunter_checkpointEventGathering(int gatheringIndex, char * source_name, 
   collections[gatheringIndex].numberActivations++;
 }
 
-void DLKHunter_startEventGathering() {
+void DLKHunter_startEventEpoch() {
+  if (!library_initialised) {
+    DLKHunter_init("profile.default.prof", 1);
+    atexit(DLKHunter_finish);
+  }
   checkStatus(PAPI_reset(eventSet));
   checkStatus(PAPI_start(eventSet));
 }
@@ -90,6 +83,7 @@ void DLKHunter_startEventGathering() {
 void DLKHunter_init(char * filename, int time_profile) {
   PAPI_library_init(PAPI_VER_CURRENT);
   PAPI_multiplex_init();
+  PAPI_hw_info_t *hwinfo = PAPI_get_hardware_info();
   time_profiling=time_profile;
   reportFilename=(char*) malloc(strlen(filename)+1);
   strcpy(reportFilename, filename);
@@ -102,13 +96,22 @@ void DLKHunter_init(char * filename, int time_profile) {
   tm_info = localtime(&timer);
 
   strftime(buffer, 26, "%H:%M:%S %d/%m/%Y", tm_info);
+  fprintf(f, "Profiling on architecture %s\n", hwinfo->model_string);
   fprintf(f, "Starting profiling run at %s\n", buffer);
   fclose(f);
+
+  initialiseEventSet();
+  library_initialised=1;
 }
 
-void DLKHunter_initialiseEventSet() {
-  eventIdentifiers=(char**) malloc(sizeof(char*) * 100);
-  collections=(struct event_collection_struct *) malloc(sizeof(struct event_collection_struct) * 100);
+static void initialiseEventSet() {
+  eventIdentifiers=(char**) malloc(sizeof(char*) * MAX_EPOCHS);
+  collections=(struct event_collection_struct *) malloc(sizeof(struct event_collection_struct) * MAX_EPOCHS);
+  int i;
+  for (i=0;i<MAX_EPOCHS;i++) {
+    collections[i].source_filename=NULL;
+    collections[i].line_num=0;
+  }
 
   checkStatus(PAPI_create_eventset(&eventSet));
   checkStatus(PAPI_assign_eventset_component(eventSet, 0));
@@ -169,6 +172,37 @@ void DLKHunter_initialiseEventSet() {
   addPAPIEvent("PAGE_WALKER_LOADS:DTLB_L2");
   addPAPIEvent("PAGE_WALKER_LOADS:DTLB_L3");
   addPAPIEvent("PAGE_WALKER_LOADS:DTLB_MEMORY");
+}
+
+static int findIndexOfGathering(char * source_name, int linenum) {
+  int i;
+  for (i=0;i<MAX_EPOCHS;i++) {
+    if (collections[i].source_filename != NULL) {
+      if (strcmp(collections[i].source_filename, source_name) == 0 && collections[i].line_num == linenum) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+static int initialiseEventGathering(char * source_name, int linenum) {
+  collections[eventCollectionCounter].counters=(long long *) malloc(sizeof(long long) * totalNumberEvents);
+  if (time_profiling) {
+    collections[eventCollectionCounter].time_profile_counters=(long long *) malloc(sizeof(long long) * totalNumberEvents * TIME_PROFILE_SLICE);
+  } else {
+    collections[eventCollectionCounter].time_profile_counters=NULL;
+  }
+  collections[eventCollectionCounter].numberActivations=0;
+  collections[eventCollectionCounter].source_filename=(char*) malloc(sizeof(char) * strlen(source_name) + 1);
+  strcpy(collections[eventCollectionCounter].source_filename, source_name);
+  collections[eventCollectionCounter].line_num=linenum;
+  int i;
+  for (i=0;i<totalNumberEvents;i++) {
+    collections[eventCollectionCounter].counters[i]=0;
+  }
+  eventCollectionCounter++;
+  return eventCollectionCounter-1;
 }
 
 static void dumpTimeCounters(FILE * f, int eventCollectionCounter, int numberToDump) {
